@@ -118,6 +118,53 @@ câmera podem causar erros. A análise não contempla buracos ou escadas.
 `sem_indicio_pela_regra` não significa caminho seguro. Esta POC serve para
 experimentos controlados, não para orientar deslocamentos de pessoas.
 
+### Diagnósticos e comparação com perfil do chão
+
+O relatório agora separa os critérios em `diagnostics`:
+
+- `closeness_pass_fraction`: fração da ROI que passou pelo limiar de proximidade;
+- `contrast_pass_fraction`: fração que passou pelo contraste com a referência;
+- `both_pass_fraction`: fração que passou pelos dois critérios simultaneamente;
+- `contrast_percentiles`: distribuição do contraste na ROI;
+- `reference_available` e `reason`: disponibilidade da referência e motivo da análise.
+
+As frações usam todos os pixels da ROI como denominador; não são probabilidades.
+Quando a referência não pode ser calculada, o contraste e a interseção são `null`,
+o resultado é `inconclusivo` e a máscara fica vazia. Mapas sem variação também são
+inconclusivos. Os relatórios anteriores não são atualizados automaticamente.
+
+A regra padrão continua sendo `--rule lateral`. A alternativa experimental
+`--rule floor` ajusta uma reta às medianas por linha na faixa central abaixo da
+ROI (por padrão, os 20% inferiores da foto). Extrapola esse perfil para estimar
+o valor esperado do chão nas linhas da ROI e compara os pixels com essa referência,
+mantendo os mesmos critérios de proximidade e área mínima.
+
+```bash
+mobility-risk fotos/cadeirafrente2.jpeg --rule floor --min-closeness 0.20 \
+  --depth-map outputs/comparacao/cadeirafrente2/original/depth.npy \
+  --output outputs/chao-cadeira2
+```
+
+Essa alternativa supõe chão plano e visível na faixa inferior; não identifica o
+chão semanticamente. Exige pelo menos oito linhas de amostra, inclinação do perfil
+de pelo menos `0.05` (por altura normalizada) e mediana do erro de ajuste de até
+`0.05` (na escala de profundidade normalizada). O ajuste e seus limites ficam em
+`floor_fit`. Um ajuste aceito não comprova que a faixa contém chão: paredes,
+móveis, câmera inclinada e oclusão podem provocar erros. Ao rejeitar o ajuste,
+a regra retorna `inconclusivo`, sem mudar automaticamente para outra regra.
+
+Para comparar as duas regras com os limiares `0.60` e `0.20` nos mapas já salvos:
+
+```bash
+python scripts/compare_rules.py
+```
+
+O script procura `outputs/comparacao/*/original/depth.npy` e a foto correspondente
+em `fotos/`. Salva imagens e relatórios em `outputs/diagnostico/`, além de
+`summary.csv`. Não baixa nem executa o modelo. Aceita `--images-dir`, `--maps-dir`
+e `--output` para escolher outras pastas. Executar novamente sobrescreve os
+resultados no destino; mantenha as fontes separadas do destino.
+
 ### Testes sem baixar o modelo
 
 ```bash

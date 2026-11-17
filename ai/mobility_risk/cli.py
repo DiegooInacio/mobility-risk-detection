@@ -18,12 +18,14 @@ def main(argv=None):
     parser.add_argument("--depth-map", type=Path,
                         help="Reutiliza .npy de profundidade inversa relativa, sem carregar modelo")
     parser.add_argument("--min-closeness", type=float, default=0.60)
+    parser.add_argument("--rule", choices=["lateral", "floor"], default="lateral",
+                        help="Referência de comparação: laterais ou perfil experimental do chão")
     parser.add_argument("--min-contrast", type=float, default=0.15)
     parser.add_argument("--min-area-fraction", type=float, default=0.05)
     args = parser.parse_args(argv)
     try:
         config = Config(min_closeness=args.min_closeness, min_contrast=args.min_contrast,
-                        min_area_fraction=args.min_area_fraction)
+                        min_area_fraction=args.min_area_fraction, rule=args.rule)
         with Image.open(args.image) as source:
             image = ImageOps.exif_transpose(source).convert("RGB")
         start = perf_counter()
@@ -47,7 +49,11 @@ def main(argv=None):
                 "depth_load_or_inference": round(depth_seconds, 4),
                 "analysis": round(analysis_seconds, 4),
             },
-            "timing_note": "A primeira inferência inclui carregamento/download do modelo; não é benchmark de FPS.",
+            "timing_note": (
+                "Mapa reutilizado: mede leitura do arquivo, sem inferência do modelo."
+                if args.depth_map else
+                "A primeira inferência inclui carregamento/download do modelo; não é benchmark de FPS."
+            ),
         })
         pixels = np.asarray(image).copy()
         pixels[mask] = (0.4 * pixels[mask] + 0.6 * np.array([255, 50, 50])).astype(np.uint8)
@@ -67,6 +73,12 @@ def main(argv=None):
         parser.exit(1, f"Erro: {exc}\n")
     print(f"Resultado: {report['status']}")
     print(f"Área candidata na região frontal: {report['candidate_area_fraction']:.1%}")
+    diagnostic = report["diagnostics"]
+    print(f"Passou por proximidade: {diagnostic['closeness_pass_fraction']:.2%}")
+    if diagnostic["contrast_pass_fraction"] is not None:
+        print(f"Passou por contraste ({args.rule}): {diagnostic['contrast_pass_fraction']:.2%}")
+    else:
+        print(f"Contraste indisponível: {diagnostic['reason']}")
     print(f"Arquivos salvos em: {args.output.resolve()}")
 
 

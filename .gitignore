@@ -3,4 +3,6 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 outputs/
+# Fotos locais usadas nos experimentos; não fazem parte do código da POC.
+fotos/
 .pytest_cache/
