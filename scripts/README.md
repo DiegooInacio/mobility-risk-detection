@@ -1,5 +1,59 @@
 # Scripts
 
+## Comparar margens ao redor das caixas
+
+```bash
+python scripts/compare_attention.py
+```
+
+Usa as máscaras salvas para comparar `occupancy` com caixas expandidas em 0%,
+15% e 30% por lado. Produz 44 análises das 11 imagens em
+`outputs/comparacao-atencao/`, com CSV, overlays, regiões de atenção, máscaras dos
+objetos, relatórios e snapshot do código. Não executa modelos nem lê profundidade.
+
+`--margins 0 0.15 0.30` permite especificar margens distintas entre 0 e 1.
+`--collection`, `--instances-dir` e `--output` configuram as pastas. Use um destino
+novo para repetir; arquivos da comparação anterior são preservados.
+Os resultados descrevem sobreposição na imagem, não chegada do usuário a uma zona
+física ou distância. Veja `experiments/comparacao-atencao.md`.
+
+## Relatório de ocupação frontal
+
+```bash
+python -m pip install -e '.[report]'
+python scripts/generate_occupancy_report.py
+```
+
+Gera `documentation/relatorio-poc-ocupacao-frontal.pdf`, em A4 e preto e branco,
+como complemento aos relatórios anteriores. Usa os dados em
+`outputs/comparacao-ocupacao/` e as referências em `outputs/comparacao-objetos/`,
+além das fotos. Não executa modelos. Inclui resultados nas 11 imagens, evidências
+visuais, limitações e questões para discutir antes de uma nova coleta.
+
+## Comparar ocupação frontal sem profundidade
+
+```bash
+python scripts/compare_occupancy.py
+```
+
+Avalia `occupancy` nas 11 fotos usando as mesmas máscaras da comparação anterior.
+O script lê fotos, cache de instâncias e CSV de referência; não lê nem estima
+profundidade. Gera 11 resultados novos de ocupação, imagens marcadas, hashes e
+snapshot do código em `outputs/comparacao-ocupacao/`. O CSV combina esses resultados
+com as 66 referências históricas; não representa 77 novos exemplos ou inferências.
+
+Opções: `--collection`, `--instances-dir`, `--reference` e `--output`. Os perfis de
+referência devem conter metric/objects/hybrid em 2 m e 3 m por imagem. O destino
+deve ser novo. Para repetir:
+
+```bash
+python scripts/compare_occupancy.py --output outputs/comparacao-ocupacao-repeticao
+```
+
+Sem cache, a aplicação pode analisar uma foto diretamente com
+`mobility-risk foto.jpeg --rule occupancy --output outputs/ocupacao-foto`, usando
+apenas o segmentador. A saída descreve ocupação da imagem, não proximidade física.
+
 ## Relatório consolidado da etapa métrica e de segmentação
 
 ```bash

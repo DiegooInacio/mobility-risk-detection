@@ -40,46 +40,78 @@ class ObjectConfig:
                 raise ValueError(f"{name} deve estar em (0, 1].")
 
 
-def analyze_objects(depth, instances, config=ObjectConfig()):
-    depth = np.asarray(depth, dtype=np.float32)
-    if depth.ndim != 2 or min(depth.shape) < 16 or not np.isfinite(depth).all() or np.any(depth <= 0):
-        raise ValueError("Profundidade deve ser um mapa 2D em metros, positivo e finito, de pelo menos 16x16.")
-    height, width = depth.shape
+def roi_geometry(image_shape):
+    if len(image_shape) != 2 or min(image_shape) < 16:
+        raise ValueError("A imagem deve ter pelo menos 16x16 pixels.")
+    height, width = image_shape
     geometry = Config()
     left, right = int(width * geometry.roi_left), int(width * geometry.roi_right)
     top, bottom = int(height * geometry.roi_top), int(height * geometry.roi_bottom)
     central_left = left + int((right - left) * 0.4)
     central_right = max(central_left + 1, left + int((right - left) * 0.6))
-    roi = np.zeros_like(depth, dtype=bool)
+    roi = np.zeros(image_shape, dtype=bool)
     roi[top:bottom, left:right] = True
     central = np.zeros_like(roi)
     central[top:bottom, central_left:central_right] = True
+    return {"roi": roi, "central": central,
+            "roi_pixels": {"left": left, "right": right, "top": top, "bottom": bottom},
+            "central_strip_pixels": {"left": central_left, "right": central_right}}
+
+
+def spatial_evidence(instance, index, geometry, config):
+    """Critérios espaciais compartilhados; não recebe nem estima profundidade."""
+    roi, central = geometry["roi"], geometry["central"]
+    mask = np.asarray(instance.mask)
+    if mask.shape != roi.shape or mask.dtype != bool:
+        raise ValueError("Cada máscara deve ser booleana e ter as dimensões da imagem.")
+    if not np.isfinite(instance.confidence) or not 0 <= instance.confidence <= 1:
+        raise ValueError("Confiança de instância inválida.")
+    total = int(mask.sum())
+    inside = mask & roi
+    count = int(inside.sum())
+    min_pixels = max(1, int(np.ceil(roi.sum() * config.min_roi_fraction)))
+    overlap = count / total if total else 0.0
+    central_fraction = int((inside & central).sum()) / count if count else 0.0
+    reasons = []
+    if instance.confidence < config.min_confidence:
+        reasons.append("low_segmentation_confidence")
+    if count < min_pixels:
+        reasons.append("insufficient_roi_pixels")
+    if overlap < config.min_object_overlap:
+        reasons.append("mostly_outside_roi")
+    if central_fraction < config.min_central_fraction:
+        reasons.append("outside_central_strip")
+    coords = np.argwhere(mask)
+    return {
+        "instance_index": index, "class_name": str(instance.class_name),
+        "segmentation_confidence": float(instance.confidence),
+        "mask_pixel_count": total, "roi_pixel_count": count,
+        "roi_overlap_fraction": overlap, "central_fraction": central_fraction,
+        "roi_area_fraction": count / int(roi.sum()),
+        "image_area_fraction": total / roi.size,
+        "rejection_reasons": reasons,
+        "bbox_pixels": {"left": int(coords[:, 1].min()), "right": int(coords[:, 1].max()) + 1,
+                        "top": int(coords[:, 0].min()), "bottom": int(coords[:, 0].max()) + 1}
+                       if total else None,
+    }, inside
+
+
+def analyze_objects(depth, instances, config=ObjectConfig()):
+    depth = np.asarray(depth, dtype=np.float32)
+    if depth.ndim != 2 or min(depth.shape) < 16 or not np.isfinite(depth).all() or np.any(depth <= 0):
+        raise ValueError("Profundidade deve ser um mapa 2D em metros, positivo e finito, de pelo menos 16x16.")
+    geometry = roi_geometry(depth.shape)
+    roi = geometry["roi"]
     min_pixels = max(1, int(np.ceil(roi.sum() * config.min_roi_fraction)))
     alerts, near = np.zeros_like(roi), np.zeros_like(roi)
     objects = []
     for index, instance in enumerate(instances):
-        mask = np.asarray(instance.mask)
-        if mask.shape != depth.shape or mask.dtype != bool:
-            raise ValueError("Cada máscara deve ser booleana e ter as dimensões do mapa.")
-        if not np.isfinite(instance.confidence) or not 0 <= instance.confidence <= 1:
-            raise ValueError("Confiança de instância inválida.")
-        total = int(mask.sum())
-        inside = mask & roi
-        count = int(inside.sum())
+        evidence, inside = spatial_evidence(instance, index, geometry, config)
+        count = evidence["roi_pixel_count"]
         close = inside & (depth <= config.max_distance_m)
         close_count = int(close.sum())
-        overlap = count / total if total else 0.0
-        central_fraction = int((inside & central).sum()) / count if count else 0.0
         near_fraction = close_count / count if count else 0.0
-        reasons = []
-        if instance.confidence < config.min_confidence:
-            reasons.append("low_segmentation_confidence")
-        if count < min_pixels:
-            reasons.append("insufficient_roi_pixels")
-        if overlap < config.min_object_overlap:
-            reasons.append("mostly_outside_roi")
-        if central_fraction < config.min_central_fraction:
-            reasons.append("outside_central_strip")
+        reasons = evidence["rejection_reasons"]
         if near_fraction < config.min_near_fraction:
             reasons.append("insufficient_near_fraction")
         accepted = not reasons
@@ -87,16 +119,9 @@ def analyze_objects(depth, instances, config=ObjectConfig()):
             # Agrupa a instância, inclusive partes desconectadas, sem preencher os buracos.
             alerts |= inside
             near |= close
-        coords = np.argwhere(mask)
         objects.append({
-            "instance_index": index, "class_name": str(instance.class_name),
-            "segmentation_confidence": float(instance.confidence),
-            "mask_pixel_count": total, "roi_pixel_count": count,
-            "roi_overlap_fraction": overlap, "central_fraction": central_fraction,
+            **evidence,
             "near_fraction": near_fraction, "alert": accepted, "rejection_reasons": reasons,
-            "bbox_pixels": {"left": int(coords[:, 1].min()), "right": int(coords[:, 1].max()) + 1,
-                            "top": int(coords[:, 0].min()), "bottom": int(coords[:, 0].max()) + 1}
-                           if total else None,
             "estimated_depth_p10_m": float(np.percentile(depth[inside], 10)) if count else None,
             "estimated_depth_median_m": float(np.median(depth[inside])) if count else None,
         })
@@ -106,7 +131,7 @@ def analyze_objects(depth, instances, config=ObjectConfig()):
         "rule": "objects", "depth_kind": "metric_m", "config": asdict(config),
         "status": "possivel_obstaculo" if has_alert else
                   "sem_indicio_pela_regra" if confident else "inconclusivo",
-        "roi_pixels": {"left": left, "right": right, "top": top, "bottom": bottom},
+        "roi_pixels": geometry["roi_pixels"],
         "candidate_area_fraction": float(alerts[roi].mean()),
         "diagnostics": {"detected_instance_count": len(objects),
                         "alert_instance_count": sum(obj["alert"] for obj in objects),
@@ -114,7 +139,7 @@ def analyze_objects(depth, instances, config=ObjectConfig()):
                         "near_pixel_fraction": float(near[roi].mean()),
                         "reason": "instances_evaluated" if confident else
                                   "no_confident_instances" if instances else "no_detected_instances"},
-        "central_strip_pixels": {"left": central_left, "right": central_right},
+        "central_strip_pixels": geometry["central_strip_pixels"],
         "objects": objects,
         "coverage": "Somente instâncias detectadas das classes conhecidas; ausência de objeto não atesta segurança.",
         "note": "Distâncias estimadas. Confiança do segmentador não é probabilidade de colisão. Sem teste semântico de chão/parede.",

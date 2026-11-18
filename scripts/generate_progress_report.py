@@ -26,11 +26,11 @@ def load_rows(path, count):
     return rows
 
 
-def monochrome_figure(path, width=165):
+def monochrome_figure(path, width=165, mask_name="candidates.png"):
     report = read_report(path)
     with Image.open(ROOT / report["image"]) as source:
         photo = ImageOps.exif_transpose(source).convert("L")
-    with Image.open(ROOT / path / "candidates.png") as source:
+    with Image.open(ROOT / path / mask_name) as source:
         mask = source.convert("L")
     for stroke_width, color in ((7, 255), (3, 0)):
         stripes = Image.new("L", photo.size, 0)

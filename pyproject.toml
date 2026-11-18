@@ -13,6 +13,7 @@ dependencies = ["numpy>=1.26,<3", "Pillow>=10,<13"]
 model = ["torch>=2.2,<3", "transformers>=4.45,<5", "safetensors>=0.4"]
 report = ["reportlab>=4,<6"]
 objects = ["torch>=2.2,<3", "transformers>=4.45,<5", "safetensors>=0.4", "ultralytics>=8.3,<9"]
+segmentation = ["ultralytics>=8.3,<9"]
 
 [project.scripts]
 mobility-risk = "mobility_risk.cli:main"

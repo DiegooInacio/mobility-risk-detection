@@ -8,10 +8,106 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageOps
 
 from .analysis import Config, analyze
+from .attention import AttentionConfig, analyze_attention
 from .depth import METRIC_MODEL_ID, MODEL_ID, estimate
 from .metric import MetricConfig, analyze_metric
 from .objects import (ObjectConfig, analyze_objects, combine_reports, load_instances,
                       save_instances, segment)
+from .occupancy import OccupancyConfig, analyze_occupancy
+
+
+def render_overlay(image, mask, report, min_confidence=None):
+    pixels = np.asarray(image).copy()
+    pixels[mask] = (0.4 * pixels[mask] + 0.6 * np.array([255, 50, 50])).astype(np.uint8)
+    overlay = Image.fromarray(pixels)
+    roi = report["roi_pixels"]
+    draw = ImageDraw.Draw(overlay)
+    draw.rectangle((roi["left"], roi["top"], roi["right"] - 1, roi["bottom"] - 1),
+                   outline="yellow", width=3)
+    if min_confidence is not None:
+        for obj in report["objects"]:
+            if obj["bbox_pixels"] and obj["segmentation_confidence"] >= min_confidence:
+                box = obj["bbox_pixels"]
+                expanded = obj.get("expanded_bbox_pixels")
+                if expanded:
+                    x0, y0, x1, y1 = (expanded[key] for key in ("left", "top", "right", "bottom"))
+                    for x in range(x0, x1, 20):
+                        draw.line((x, y0, min(x + 11, x1 - 1), y0), fill="orange", width=3)
+                        draw.line((x, y1 - 1, min(x + 11, x1 - 1), y1 - 1), fill="orange", width=3)
+                    for y in range(y0, y1, 20):
+                        draw.line((x0, y, x0, min(y + 11, y1 - 1)), fill="orange", width=3)
+                        draw.line((x1 - 1, y, x1 - 1, min(y + 11, y1 - 1)), fill="orange", width=3)
+                draw.rectangle((box["left"], box["top"], box["right"]-1, box["bottom"]-1),
+                               outline="red" if obj["alert"] else "cyan", width=3)
+                draw.text((box["left"] + 3, box["top"] + 3),
+                          f"{obj['class_name']} {obj['segmentation_confidence']:.2f}",
+                          fill="white", stroke_width=1, stroke_fill="black")
+    return overlay
+
+
+def run_spatial(args):
+    attention = args.rule == "attention"
+    incompatible = (args.depth_map, args.depth_kind, args.max_distance_m,
+                    args.min_object_near_fraction, args.min_floor_gap_m,
+                    args.min_component_fraction, args.decision_mode,
+                    args.min_width_fraction, args.min_height_fraction,
+                    args.min_closeness, args.min_contrast, args.min_area_fraction)
+    if any(value is not None for value in incompatible):
+        raise ValueError(f"A regra {args.rule} não usa mapas, profundidade, metros ou parâmetros das regras anteriores.")
+    incompatible_artifacts = ["depth.npy", "depth.png", "depth.meta.json", "near.png"]
+    incompatible_artifacts += ["occupancy.png"] if attention else ["attention.png", "objects.png"]
+    if any((args.output / name).exists() for name in incompatible_artifacts):
+        raise ValueError("O destino contém artefatos de outra abordagem. Escolha outra pasta.")
+    config = AttentionConfig(
+        margin_fraction=0.15 if args.attention_margin is None else args.attention_margin,
+        min_confidence=0.35 if args.min_object_confidence is None else args.min_object_confidence,
+        min_roi_fraction=0.01 if args.min_attention_fraction is None else args.min_attention_fraction,
+        min_zone_overlap=0.10 if args.min_attention_overlap is None else args.min_attention_overlap,
+        min_central_fraction=0.10 if args.min_attention_central_fraction is None else args.min_attention_central_fraction
+    ) if attention else OccupancyConfig(
+        min_confidence=0.35 if args.min_object_confidence is None else args.min_object_confidence,
+        min_roi_fraction=0.01 if args.min_occupancy_fraction is None else args.min_occupancy_fraction,
+        min_object_overlap=0.10 if args.min_occupancy_overlap is None else args.min_occupancy_overlap,
+        min_central_fraction=0.10 if args.min_occupancy_central_fraction is None else args.min_occupancy_central_fraction)
+    with Image.open(args.image) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+    shape = (image.height, image.width)
+    image_sha256 = hashlib.sha256(args.image.read_bytes()).hexdigest()
+    start = perf_counter()
+    if args.instances:
+        instances, metadata = load_instances(args.instances, shape, image_sha256, config.min_confidence)
+    else:
+        instances, metadata = segment(image, args.segment_model, args.device, min(0.15, config.min_confidence))
+    segmentation_seconds = perf_counter() - start
+    start = perf_counter()
+    if attention:
+        report, mask, object_mask = analyze_attention(shape, instances, config)
+    else:
+        report, mask = analyze_occupancy(shape, instances, config)
+    report.update({
+        "image": str(args.image), "image_size": [image.width, image.height], "image_sha256": image_sha256,
+        "segmentation": {**metadata, "source": str(args.instances) if args.instances else None},
+        "timing_seconds": {"analysis": round(perf_counter() - start, 4),
+                           "segmentation_load_or_inference": round(segmentation_seconds, 4)},
+        "timing_note": "Sem etapa de profundidade. Segmentação inclui carregamento/inferência ou leitura de instâncias; não é benchmark de FPS.",
+    })
+    args.output.mkdir(parents=True, exist_ok=True)
+    render_overlay(image, mask, report, config.min_confidence).save(args.output / "overlay.png")
+    Image.fromarray(mask.astype(np.uint8) * 255).save(args.output / ("attention.png" if attention else "occupancy.png"))
+    if attention:
+        Image.fromarray(object_mask.astype(np.uint8) * 255).save(args.output / "objects.png")
+    save_instances(args.output / "instances.npz", instances, shape, image_sha256, metadata)
+    (args.output / "report.json").write_text(
+        json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
+    print(f"Resultado: {report['status']}")
+    if attention:
+        print(f"Sobreposição da região de atenção: {report['attention_area_fraction']:.1%}")
+        print(f"Instâncias que acionaram atenção: {report['diagnostics']['triggering_instance_count']}")
+    else:
+        print(f"Área ocupada na região frontal: {report['occupancy_area_fraction']:.1%}")
+        print(f"Instâncias com ocupação frontal: {report['diagnostics']['occupying_instance_count']}")
+    print(report["note"])
+    print(f"Arquivos salvos em: {args.output.resolve()}")
 
 
 def main(argv=None):
@@ -24,8 +120,8 @@ def main(argv=None):
     parser.add_argument("--depth-kind", choices=["relative_inverse_depth", "metric_m"],
                         help="Declara a unidade de um .npy externo sem metadados")
     parser.add_argument("--min-closeness", type=float)
-    parser.add_argument("--rule", choices=["lateral", "floor", "metric", "objects", "hybrid"], default="lateral",
-                        help="lateral/floor usam profundidade relativa; metric usa o modelo métrico indoor")
+    parser.add_argument("--rule", choices=["lateral", "floor", "metric", "objects", "hybrid", "occupancy", "attention"], default="lateral",
+                        help="occupancy/attention usam só segmentação; demais regras usam profundidade")
     parser.add_argument("--min-contrast", type=float)
     parser.add_argument("--min-area-fraction", type=float)
     parser.add_argument("--max-distance-m", type=float)
@@ -38,8 +134,24 @@ def main(argv=None):
     parser.add_argument("--segment-model", type=Path, default=Path("outputs/models/yolo11n-seg.pt"))
     parser.add_argument("--min-object-confidence", type=float)
     parser.add_argument("--min-object-near-fraction", type=float)
+    parser.add_argument("--min-occupancy-fraction", type=float, help="Fração mínima da ROI ocupada por uma instância")
+    parser.add_argument("--min-occupancy-overlap", type=float, help="Fração mínima da máscara do objeto dentro da ROI")
+    parser.add_argument("--min-occupancy-central-fraction", type=float, help="Suporte mínimo da máscara na faixa central")
+    parser.add_argument("--attention-margin", type=float, help="Margem por lado como fração da largura/altura da caixa; padrão 0.15")
+    parser.add_argument("--min-attention-fraction", type=float, help="Fração mínima da ROI coberta pela região de atenção")
+    parser.add_argument("--min-attention-overlap", type=float, help="Fração mínima da caixa expandida dentro da ROI")
+    parser.add_argument("--min-attention-central-fraction", type=float, help="Suporte mínimo da região de atenção no centro")
     args = parser.parse_args(argv)
     try:
+        if args.rule != "occupancy" and any(value is not None for value in (
+                args.min_occupancy_fraction, args.min_occupancy_overlap, args.min_occupancy_central_fraction)):
+            raise ValueError("Parâmetros de ocupação exigem --rule occupancy.")
+        if args.rule != "attention" and any(value is not None for value in (
+                args.attention_margin, args.min_attention_fraction, args.min_attention_overlap,
+                args.min_attention_central_fraction)):
+            raise ValueError("Parâmetros de região de atenção exigem --rule attention.")
+        if args.rule in ("occupancy", "attention"):
+            return run_spatial(args)
         object_rule = args.rule in ("objects", "hybrid")
         metric = args.rule in ("metric", "objects", "hybrid")
         min_area = 0.05 if args.min_area_fraction is None else args.min_area_fraction
@@ -149,22 +261,7 @@ def main(argv=None):
                 "A primeira inferência inclui carregamento/download do modelo; não é benchmark de FPS."
             ),
         })
-        pixels = np.asarray(image).copy()
-        pixels[mask] = (0.4 * pixels[mask] + 0.6 * np.array([255, 50, 50])).astype(np.uint8)
-        overlay = Image.fromarray(pixels)
-        roi = report["roi_pixels"]
-        draw = ImageDraw.Draw(overlay)
-        draw.rectangle((roi["left"], roi["top"], roi["right"] - 1, roi["bottom"] - 1),
-                       outline="yellow", width=3)
-        if object_rule:
-            for obj in report["objects"]:
-                if obj["bbox_pixels"] and obj["segmentation_confidence"] >= object_config.min_confidence:
-                    box = obj["bbox_pixels"]
-                    draw.rectangle((box["left"], box["top"], box["right"]-1, box["bottom"]-1),
-                                   outline="red" if obj["alert"] else "cyan", width=3)
-                    draw.text((box["left"] + 3, box["top"] + 3),
-                              f"{obj['class_name']} {obj['segmentation_confidence']:.2f}",
-                              fill="white", stroke_width=1, stroke_fill="black")
+        overlay = render_overlay(image, mask, report, object_config.min_confidence if object_rule else None)
         args.output.mkdir(parents=True, exist_ok=True)
         overlay.save(args.output / "overlay.png")
         Image.fromarray((normalized * 255).astype(np.uint8)).save(args.output / "depth.png")

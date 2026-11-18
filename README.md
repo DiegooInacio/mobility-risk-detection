@@ -61,8 +61,9 @@ As tecnologias poderão ser alteradas conforme os resultados obtidos durante os 
 
 ## Status
 
-POC inicial em Python para analisar fotos, gerar profundidade relativa e destacar
-possíveis obstáculos na região frontal. Ainda sem validação com cenas reais.
+POC experimental em Python para analisar fotos com profundidade relativa, métrica
+e segmentação. Inclui uma alternativa de ocupação frontal sem profundidade.
+Há comparações exploratórias com fotos próprias; ainda sem validação independente.
 
 ### Executar a POC
 
@@ -390,6 +391,125 @@ outro `--output`. Veja [a análise desta comparação](experiments/comparacao-ob
 
 Referência da integração: [Ultralytics YOLO11](https://docs.ultralytics.com/models/yolo11/)
 e [segmentação de instâncias](https://docs.ultralytics.com/tasks/segment/).
+
+### Ocupação frontal sem profundidade
+
+`--rule occupancy` usa somente a segmentação e a posição das máscaras na imagem.
+Não carrega o modelo de profundidade, não lê mapas e não gera distâncias.
+
+```bash
+python -m pip install -e '.[segmentation]'
+mobility-risk fotos/cadeira2metros.jpeg --rule occupancy --output outputs/ocupacao-teste
+```
+
+Quem já instalou `.[objects]` também tem as dependências necessárias. A regra
+compartilha com o ramo por objetos os critérios espaciais: confiança mínima de
+0,35, ao menos 1% da área da ROI por instância, ao menos 10% da máscara total
+dentro da ROI e ao menos 10% dos pixels da máscara na ROI na faixa central.
+Retira apenas a condição de profundidade. A caixa é desenhada para visualização;
+a decisão usa pixels da máscara, sem preencher a caixa ou criar uma zona física.
+
+As proporções `image_area_fraction` e `roi_area_fraction` por instância informam
+tamanho aparente. `occupancy_area_fraction` é a união das máscaras aceitas na ROI,
+sem contar pixels sobrepostos duas vezes. Esses números não medem distância,
+probabilidade de colisão ou eficácia. Em particular, um objeto ao fundo pode
+ocupar a região frontal e gerar alerta sem estar fisicamente próximo.
+
+Os estados têm nomes próprios para evitar confundir ocupação com proximidade:
+
+- `ocupacao_frontal_detectada`: ao menos uma instância passou pelos critérios;
+- `sem_ocupacao_pela_regra`: há reconhecimento com confiança suficiente, mas nenhuma
+  instância passou pelos critérios espaciais; não significa passagem livre;
+- `inconclusivo`: nenhuma instância reconhecida com confiança suficiente.
+
+Cada execução salva `overlay.png`, a máscara `occupancy.png`, `report.json` e as
+instâncias com metadados. Não há `depth.npy`, `depth.png` ou `near.png`. O overlay
+usa amarelo para ROI, vermelho para ocupação e ciano para instâncias confiáveis
+que não passaram pelos critérios. Os rótulos são as classes previstas, não
+anotações verificadas de cada objeto.
+
+É possível reutilizar as máscaras anteriores, sem executar nenhum modelo:
+
+```bash
+mobility-risk fotos/cadeira2metros.jpeg --rule occupancy \
+  --instances outputs/comparacao-objetos/objects-2m/cadeira2metros/instances.npz \
+  --output outputs/ocupacao-cache
+```
+
+Parâmetros opcionais: `--min-object-confidence`, `--min-occupancy-fraction`,
+`--min-occupancy-overlap` e `--min-occupancy-central-fraction`. Mapas de profundidade,
+limiares em metros e opções das outras decisões são rejeitados. Destinos que
+contenham artefatos de profundidade também são rejeitados; escolha uma pasta nova.
+As máscaras em cache continuam exigindo a mesma imagem, resolução e confiança
+compatível com a inferência que gerou o cache.
+
+Para comparar nas 11 fotos, mantendo exatamente as mesmas máscaras e os mesmos
+critérios espaciais:
+
+```bash
+python scripts/compare_occupancy.py
+```
+
+O script lê as máscaras de `outputs/comparacao-objetos/objects-2m/` e as seis
+configurações anteriores em `outputs/comparacao-objetos/summary.csv`. Produz **11
+análises novas**, mais **66 referências históricas** no CSV combinado, em
+`outputs/comparacao-ocupacao/`. Não faz nova inferência nem lê os mapas de
+profundidade referenciados na coleta. Os nomes das imagens não entram na decisão.
+Use um novo `--output` para repetir, pois o script recusa sobrescrever a comparação.
+Veja [a análise dos resultados](experiments/comparacao-ocupacao.md).
+
+### Região de atenção com margem ao redor do objeto
+
+`--rule attention` usa a caixa delimitadora da máscara e adiciona uma margem 2D
+antes de avaliar a sobreposição com a região frontal. O padrão é **15% da largura
+e da altura originais em cada lado**. Uma caixa de 100x200 pixels recebe 15 pixels
+à esquerda/direita e 30 acima/abaixo, antes do recorte nos limites da imagem.
+Arredonda-se para fora para obter pixels inteiros. A margem pode variar de 0 a 1.
+
+```bash
+mobility-risk fotos/cadeira2metros.jpeg --rule attention --attention-margin 0.15 \
+  --output outputs/teste-atencao
+```
+
+É possível usar `--instances` com o cache já gerado, como em `occupancy`, sem
+executar o segmentador. A regra não usa profundidade e rejeita parâmetros em
+metros. `--min-attention-fraction` controla a parcela mínima da ROI coberta pela
+região de atenção (padrão 1%); `--min-attention-overlap`, a parcela mínima da
+caixa expandida dentro da ROI (10%); `--min-attention-central-fraction`, o suporte
+central da interseção (10%). Mantém confiança mínima de 0,35. O alerta exige todas
+as condições por instância; uma simples interseção de um pixel não basta.
+
+O overlay mostra:
+
+- retângulo amarelo: ROI frontal fixa;
+- caixa vermelha/ciano: caixa do objeto, conforme acione ou não a regra;
+- contorno tracejado laranja: caixa expandida para cada instância confiável;
+- preenchimento vermelho: interseção aceita da região de atenção com a ROI.
+
+`attention.png` salva a união dessas interseções. `objects.png` mostra apenas as
+máscaras reais das instâncias que acionaram atenção, recortadas à ROI. O JSON
+separa `attention_area_fraction` de `object_occupancy_area_fraction` e registra
+caixa original, caixa expandida, margem em pixels e motivos de rejeição por objeto.
+Os estados são `regiao_atencao_acionada`, `sem_acionamento_pela_regra` e
+`inconclusivo`. Não há distância ou indicação de aproximação física.
+
+Uma margem zero ainda usa o interior da caixa inteira e pode incluir fundo ou
+buracos do objeto. Por isso, `attention --attention-margin 0` não equivale à
+regra `occupancy`, que usa a máscara. Aumentar a margem também altera as razões
+de sobreposição; não há garantia de que toda margem maior aumente os acionamentos.
+Paredes ou classes não reconhecidas continuam sem cobertura pelo segmentador.
+
+Para comparar as mesmas 11 fotos com máscara, caixa sem margem e margens de 15%
+e 30%:
+
+```bash
+python scripts/compare_attention.py
+```
+
+São 44 análises sem inferência nem mapas. As opções `--collection`,
+`--instances-dir`, `--margins` e `--output` permitem escolher entradas e margens.
+Destinos não vazios são recusados. Nesta amostra, os acionamentos não mudaram,
+apesar do aumento das áreas; veja [a análise da comparação](experiments/comparacao-atencao.md).
 
 ### Testes sem baixar o modelo
 
