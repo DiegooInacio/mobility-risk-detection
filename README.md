@@ -165,6 +165,232 @@ em `fotos/`. Salva imagens e relatórios em `outputs/diagnostico/`, além de
 e `--output` para escolher outras pastas. Executar novamente sobrescreve os
 resultados no destino; mantenha as fontes separadas do destino.
 
+### Terceira abordagem: profundidade métrica para interiores
+
+```bash
+mobility-risk fotos/cadeirafrente2.jpeg --rule metric --output outputs/metric/cadeirafrente2
+```
+
+`--rule metric` seleciona automaticamente o modelo
+`depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf`. A primeira execução baixa
+pesos próprios dessa variante. As regras `lateral` e `floor` continuam usando o
+modelo relativo anterior. Requer `transformers>=4.45` nas dependências opcionais
+`.[model]`.
+
+A regra métrica usa as seguintes hipóteses e limites iniciais, sem calibração:
+
+1. Procura pixels na ROI com profundidade estimada de até **2,0 m**.
+2. Ajusta o perfil do chão em profundidade inversa (`1/metros`), usando a faixa
+   central abaixo da ROI. Não normaliza o mapa por percentis para decidir o alerta.
+3. Mantém pixels pelo menos **0,30 m mais próximos** que a profundidade do chão
+   prevista na mesma linha. Essa diferença é de profundidade, **não de altura**.
+4. Agrupa candidatos em componentes com conectividade 4 e remove componentes
+   menores que **1% da ROI**. Gera alerta se a área total restante atingir **5%**.
+
+O perfil exige oito linhas, inclinação mínima `0.02` em `1/m` por altura
+normalizada e mediana do erro de até `0.02` em `1/m`. Os valores são registrados em
+`floor_fit`; são hipóteses experimentais. Linhas com profundidade de chão
+extrapolada não positiva em `1/m` ficam sem suporte e não geram candidatos.
+`floor_supported_fraction` informa essa cobertura. Sem ajuste aceito ou sem linha
+suportada na ROI, o resultado é `inconclusivo`. Um ajuste aceito não demonstra que
+a faixa realmente contém chão: móveis, paredes e oclusões ainda podem gerar erros.
+
+Parâmetros disponíveis:
+
+```bash
+mobility-risk fotos/cadeirafrente2.jpeg --rule metric \
+  --max-distance-m 2.0 --min-floor-gap-m 0.30 \
+  --min-component-fraction 0.01 --min-area-fraction 0.05 \
+  --output outputs/metric/cadeirafrente2
+```
+
+O JSON inclui `regions`, com caixa, área e percentis de profundidade estimada por
+componente. As caixas e as máscaras representam regiões geométricas, não classes
+de objetos. `raw_candidate_area_fraction` é a fração antes do filtro de componentes;
+`candidate_area_fraction` é a fração após o filtro. `depth.png` usa escala fixa de
+visualização, de 0 até `--max-distance-m`, com regiões mais próximas mais claras;
+valores além do limite ficam pretos. Os valores originais permanecem em `depth.npy`.
+
+As estimativas em metros precisam ser confrontadas com medidas reais. Não são
+distâncias garantidas nem uma medição da altura do obstáculo. A ROI ainda é fixa e
+não identifica a intenção de deslocamento. Essa abordagem não garante melhora em
+outras fotos e não foi validada para navegação.
+
+#### Evitar mistura de unidades
+
+Cada nova execução salva `depth.meta.json`, com tipo de profundidade, origem do
+modelo quando conhecida e tamanho da foto. Ao reutilizar `depth.npy`, o programa
+confere esses metadados; para mapas antigos, consulta `report.json` na mesma pasta.
+Mapas relativos são rejeitados pela regra métrica e vice-versa. Para um `.npy`
+externo sem metadados, a regra métrica exige declaração explícita:
+
+```bash
+mobility-risk foto.jpeg --rule metric --depth-map mapa-em-metros.npy \
+  --depth-kind metric_m --output outputs/mapa-externo
+```
+
+Não use essa opção para converter um mapa relativo: ela só declara sua unidade.
+Arquivos externos sem unidade declarada continuam sendo tratados como relativos
+pelas regras antigas, por compatibilidade. `--min-closeness` e `--min-contrast` são
+exclusivos das regras relativas; os parâmetros em metros exigem `--rule metric`.
+
+#### Decisão experimental por largura ocupada
+
+O padrão continua `--decision-mode area`, com área final mínima de 5% da ROI.
+A alternativa `--decision-mode width` substitui apenas a decisão final, usando
+os mesmos candidatos de profundidade e os mesmos componentes filtrados:
+
+```bash
+mobility-risk fotos/cadeira1metro.jpeg --rule metric --decision-mode width \
+  --max-distance-m 2.0 --min-width-fraction 0.30 --min-height-fraction 0.02 \
+  --output outputs/teste-largura
+```
+
+Cada componente precisa ter uma faixa de linhas consecutivas em que os pixels
+candidatos ocupem pelo menos 30% da largura da ROI. Nessas linhas, pelo menos 50%
+da faixa central (entre 40% e 60% da largura da ROI) também deve estar ocupada.
+A faixa precisa ter ao menos 2% da altura da ROI, nunca menos de duas linhas.
+O cálculo usa pixels presentes, não a largura da caixa do componente. Componentes
+separados não são somados para satisfazer a largura. Esses limites são hipóteses
+experimentais, sem calibração ou equivalência com largura física de passagem.
+
+No modo `width`, a área total de 5% deixa de ser a condição de alerta, mas o
+filtro de componentes de 1% continua ativo. `--min-area-fraction` permanece no
+relatório apenas para comparação diagnóstica nesse modo. O JSON informa
+`decision.area_pass`, `decision.width_pass` e o modo selecionado. Cada região
+inclui `width_support`, com suporte por linha e comprimento da faixa. A máscara
+e o vermelho do overlay continuam mostrando todos os candidatos mantidos, mesmo
+quando a regra final não emite alerta; não representam classes de objetos.
+
+O critério pode rejeitar bordas laterais finas, mas também perder obstáculos
+estreitos ou fragmentados. Ele não corrige mapas de profundidade nem produz
+candidatos que tenham falhado nos filtros anteriores. A redução de área mínima
+para 3% e a alternativa de largura foram comparadas com o padrão em 11 fotos,
+com alcances de 2 m e 3 m, sem alterar automaticamente o padrão:
+
+```bash
+python scripts/evaluate_collection.py \
+  --collection experiments/coleta-comparacao-largura.json \
+  --profiles experiments/perfis-largura.json \
+  --output outputs/comparacao-largura
+```
+
+São 66 análises sem nova inferência, usando os mapas métricos já salvos. Para
+repetir, use outro destino, pois o script recusa sobrescrever resultados.
+Veja [a análise da comparação](experiments/comparacao-largura.md).
+
+#### Comparar com a coleta anterior
+
+```bash
+python scripts/compare_metric.py
+```
+
+O script usa as fotos identificadas pelos relatórios em
+`outputs/diagnostico/*/lateral-0.20/report.json`. Executa a configuração métrica
+padrão em cada uma e reúne as quatro configurações anteriores e a nova em
+`outputs/metric/summary.csv`. Salva os novos artefatos por foto em `outputs/metric/`.
+Use `--reuse-maps` para reanalisar mapas métricos já salvos, sem nova inferência;
+os mapas faltantes são gerados. Aceita `--images-dir`, `--baseline-dir`, `--output`
+e `--device`. A execução atual carrega o modelo por foto, então os tempos não são
+um benchmark de inferência contínua. Os resultados da coleta estão descritos em
+[comparacao-metrica-inicial.md](experiments/comparacao-metrica-inicial.md).
+
+### Segmentação de objetos e abordagem híbrida
+
+Instale as dependências opcionais de segmentação:
+
+```bash
+python -m pip install -e '.[objects]'
+```
+
+As opções `--rule objects` e `--rule hybrid` combinam profundidade métrica com
+instâncias de YOLO11n-seg, pré-treinado em classes conhecidas. Os pesos são
+baixados na primeira execução para `outputs/models/yolo11n-seg.pt`. Inferência é
+local; as fotos não são enviadas a um serviço de reconhecimento.
+
+```bash
+mobility-risk fotos/cadeira2metros.jpeg --rule objects --max-distance-m 3.0 \
+  --depth-map outputs/coleta02/baseline/cadeira2metros/depth.npy \
+  --output outputs/teste-objetos
+```
+
+Para cada instância prevista, a decisão padrão exige:
+
+- confiança de segmentação de pelo menos **0,35**;
+- máscara dentro da ROI com ao menos **1% da área da ROI**;
+- ao menos **10% da máscara total** dentro da ROI;
+- ao menos **10% dos pixels da máscara na ROI** na faixa central (40% a 60% da
+  largura da ROI);
+- ao menos **10% dos pixels da máscara na ROI** dentro de `--max-distance-m`.
+
+O valor padrão da distância continua 2 m. A confiança e a fração próxima podem
+ser alteradas com `--min-object-confidence` e `--min-object-near-fraction`. Os
+limites são hipóteses iniciais e ficam registrados no JSON. Não são probabilidades
+de colisão. A segmentação é inicialmente executada com confiança de 0,15 (ou menor,
+se solicitado na decisão) para permitir comparação posterior de limiares.
+
+O modo `objects` agrupa partes pela instância prevista, mesmo desconectadas,
+mantendo a máscara fornecida pelo modelo. Não preenche a caixa do objeto, mas a
+própria máscara prevista pode conter fundo ou erros. Dispensa o perfil do chão e
+os componentes de profundidade: a proximidade é avaliada dentro da máscara da
+instância. Isso também significa que chão e paredes não são reconhecidos por
+esse ramo. Classes desconhecidas, objetos não detectados e detecções incorretas
+continuam sendo limitações. Sem nenhuma instância com confiança suficiente, o
+resultado é `inconclusivo`, e não passagem livre.
+
+O modo `hybrid` executa a regra métrica e o ramo por objetos. Emite alerta se
+**qualquer um** emitir alerta. Sem alerta, se algum ramo for inconclusivo, a
+combinação também é inconclusiva. Só retorna `sem_indicio_pela_regra` se ambos
+retornarem esse resultado. Assim, um alerta geométrico de parede não é suprimido
+pela ausência de classe conhecida. Essa união preserva também eventuais alertas
+indevidos do ramo geométrico; não é um mecanismo de confirmação entre modelos.
+
+```bash
+mobility-risk fotos/cadeira2metros.jpeg --rule hybrid --max-distance-m 3.0 \
+  --depth-map outputs/coleta02/baseline/cadeira2metros/depth.npy \
+  --output outputs/teste-hibrido
+```
+
+Nos novos overlays: amarelo delimita a ROI; caixas ciano indicam instâncias
+detectadas com confiança suficiente, mas sem alerta; caixas vermelhas indicam
+instâncias com alerta. No ramo por objetos, o preenchimento vermelho marca a
+**máscara inteira da instância dentro da ROI**, e não somente os pixels próximos.
+`near.png` mostra os pixels próximos que sustentam os alertas por objetos.
+No híbrido, a marcação também inclui o ramo geométrico quando este emite alerta.
+As áreas marcadas têm significados diferentes entre os ramos e não medem eficácia.
+
+O JSON registra classes previstas, confiança, sobreposição, fração próxima,
+profundidades estimadas e motivos de rejeição. No híbrido, os relatórios dos dois
+ramos estão em `branches`. As instâncias podem ser reutilizadas sem repetir o
+segmentador:
+
+```bash
+mobility-risk fotos/cadeira2metros.jpeg --rule hybrid --max-distance-m 3.0 \
+  --depth-map outputs/teste-objetos/depth.npy \
+  --instances outputs/teste-objetos/instances.npz --output outputs/teste-cache
+```
+
+`instances.meta.json` confere o hash da foto e a resolução, registra o hash dos
+pesos e impede baixar a confiança de decisão abaixo do limiar usado para gerar
+o cache. Não converte máscaras de outra imagem. A medição de tempo separa leitura
+da profundidade, segmentação (incluindo carregamento ou cache) e análise; não é FPS.
+
+Para comparar geometria, objetos e híbrido com limites de 2 m e 3 m nas 11 fotos:
+
+```bash
+python scripts/compare_objects.py
+```
+
+O script reutiliza os mapas existentes e executa a segmentação uma vez por foto,
+reutilizando as mesmas instâncias nas demais configurações. Aceita `--instances-dir`
+com uma pasta contendo `<nome>/instances.npz` para evitar inferências já feitas.
+Salva 66 análises, CSV, manifestos e snapshot do código em
+`outputs/comparacao-objetos/`. Destino não vazio é recusado; para repetir, escolha
+outro `--output`. Veja [a análise desta comparação](experiments/comparacao-objetos.md).
+
+Referência da integração: [Ultralytics YOLO11](https://docs.ultralytics.com/models/yolo11/)
+e [segmentação de instâncias](https://docs.ultralytics.com/tasks/segment/).
+
 ### Testes sem baixar o modelo
 
 ```bash
@@ -183,7 +409,9 @@ mobility-risk foto.jpg --depth-map outputs/teste-01/depth.npy --output outputs/t
 ```
 
 O `.npy` deve conter profundidade **inversa relativa**, com as mesmas dimensões da
-foto após correção da orientação EXIF. Um mapa em metros não é compatível com essa
-regra. Ao reutilizar mapas, o relatório registra a origem e não atribui um modelo.
+foto após correção da orientação EXIF. Um mapa em metros não é compatível com as
+regras `lateral` e `floor`; ele exige `--rule metric`. Ao reutilizar mapas, o
+relatório registra a origem e mantém `model` vazio, porque não houve inferência;
+`source_model` preserva a origem quando conhecida nos metadados.
 
 Referência de integração: [Depth Anything V2 Small no Hugging Face](https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf).

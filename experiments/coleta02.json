@@ -1,0 +1,13 @@
+{
+  "description": "Segunda coleta: seis imagens novas, avaliadas inicialmente com a configuração métrica fixa.",
+  "distance_quality": "Distâncias aproximadas informadas pelo usuário; não servem para calcular erro métrico de calibração.",
+  "label_note": "Interpretações visuais para discussão, não anotações independentes certificadas. O usuário confirmou que o cachorro está fora do caminho pretendido.",
+  "images": [
+    {"image": "fotos/cadeira1metro.jpeg", "approximate_distance_m": 1.0, "scene": "Cadeira frontal"},
+    {"image": "fotos/cadeira1meiometro.jpeg", "approximate_distance_m": 1.5, "scene": "Cadeira frontal"},
+    {"image": "fotos/cadeira2metros.jpeg", "approximate_distance_m": 2.0, "scene": "Cadeira frontal; caso próximo do limite de alerta e distância aproximada"},
+    {"image": "fotos/cadeiraadireita1.jpeg", "approximate_distance_m": null, "scene": "Cadeira à direita; passagem central aparentemente livre"},
+    {"image": "fotos/parciallivre1.jpeg", "approximate_distance_m": null, "scene": "Objetos laterais, incluindo galão; passagem central aparentemente livre"},
+    {"image": "fotos/livrechichi1.jpeg", "approximate_distance_m": null, "scene": "Cachorro fora do caminho pretendido, conforme confirmação do usuário"}
+  ]
+}

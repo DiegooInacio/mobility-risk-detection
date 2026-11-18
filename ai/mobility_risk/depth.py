@@ -3,15 +3,16 @@
 import numpy as np
 
 MODEL_ID = "depth-anything/Depth-Anything-V2-Small-hf"
+METRIC_MODEL_ID = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
 
 
-def estimate(image, device="auto"):
+def estimate(image, device="auto", model_id=MODEL_ID):
     import torch
     from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
     selected = ("cuda" if torch.cuda.is_available() else "cpu") if device == "auto" else device
-    processor = AutoImageProcessor.from_pretrained(MODEL_ID)
-    model = AutoModelForDepthEstimation.from_pretrained(MODEL_ID).to(selected).eval()
+    processor = AutoImageProcessor.from_pretrained(model_id, use_fast=False)
+    model = AutoModelForDepthEstimation.from_pretrained(model_id).to(selected).eval()
     inputs = processor(images=image, return_tensors="pt").to(selected)
     with torch.inference_mode():
         prediction = model(**inputs).predicted_depth

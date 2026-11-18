@@ -1,0 +1,8 @@
+{
+  "area5-2m": {},
+  "area3-2m": {"min_area_fraction": 0.03},
+  "largura-2m": {"decision_mode": "width"},
+  "area5-3m": {"max_distance_m": 3.0},
+  "area3-3m": {"max_distance_m": 3.0, "min_area_fraction": 0.03},
+  "largura-3m": {"max_distance_m": 3.0, "decision_mode": "width"}
+}

@@ -1,0 +1,17 @@
+{
+  "description": "Comparação exploratória do critério de decisão nas seis fotos novas e cinco anteriores.",
+  "note": "Dados de desenvolvimento conhecidos. Distâncias da coleta02 são aproximadas. Cachorro fora do caminho segundo o usuário. Não atribuir acurácia geral.",
+  "images": [
+    {"image": "fotos/cadeira1metro.jpeg", "depth_map": "outputs/coleta02/baseline/cadeira1metro/depth.npy", "group": "coleta02", "approximate_distance_m": 1.0, "scene": "Cadeira frontal"},
+    {"image": "fotos/cadeira1meiometro.jpeg", "depth_map": "outputs/coleta02/baseline/cadeira1meiometro/depth.npy", "group": "coleta02", "approximate_distance_m": 1.5, "scene": "Cadeira frontal"},
+    {"image": "fotos/cadeira2metros.jpeg", "depth_map": "outputs/coleta02/baseline/cadeira2metros/depth.npy", "group": "coleta02", "approximate_distance_m": 2.0, "scene": "Cadeira frontal; distância aproximada próxima do limite"},
+    {"image": "fotos/cadeiraadireita1.jpeg", "depth_map": "outputs/coleta02/baseline/cadeiraadireita1/depth.npy", "group": "coleta02", "scene": "Cadeira lateral; centro aparentemente livre"},
+    {"image": "fotos/parciallivre1.jpeg", "depth_map": "outputs/coleta02/baseline/parciallivre1/depth.npy", "group": "coleta02", "scene": "Objetos laterais e galão"},
+    {"image": "fotos/livrechichi1.jpeg", "depth_map": "outputs/coleta02/baseline/livrechichi1/depth.npy", "group": "coleta02", "scene": "Cachorro fora do caminho pretendido"},
+    {"image": "fotos/cadeirafrente1.jpeg", "depth_map": "outputs/metric/cadeirafrente1/depth.npy", "group": "anterior", "scene": "Cadeira frontal"},
+    {"image": "fotos/cadeirafrente2.jpeg", "depth_map": "outputs/metric/cadeirafrente2/depth.npy", "group": "anterior", "scene": "Cadeira frontal"},
+    {"image": "fotos/cadeiralado1.jpeg", "depth_map": "outputs/metric/cadeiralado1/depth.npy", "group": "anterior", "scene": "Cadeira lateral invade a ROI; interpretação ambígua"},
+    {"image": "fotos/livre1.jpeg", "depth_map": "outputs/metric/livre1/depth.npy", "group": "anterior", "scene": "Cena fornecida como livre"},
+    {"image": "fotos/livre2.jpeg", "depth_map": "outputs/metric/livre2/depth.npy", "group": "anterior", "scene": "Cena fornecida como livre"}
+  ]
+}
